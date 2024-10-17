@@ -1,0 +1,42 @@
+name: Release Crate
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  package_and_publish:
+    name: Package and Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Validate README.md Encoding
+        run: |
+          # Check if the README.md is valid UTF-8
+          if ! iconv -f UTF-8 -t UTF-8 README.md -o /dev/null; then
+            echo "README.md is not valid UTF-8" >&2
+            echo "---- File Content Hex Dump ----"
+            hexdump -C README.md
+            echo "---- Non-UTF-8 Characters ----"
+            grep -obUaP '[^\x00-\x7F]' README.md
+            exit 1
+          else
+            echo "README.md is valid UTF-8"
+          fi
+
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@v3
+        with:
+          extra_plugins: |
+            semantic-release-cargo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

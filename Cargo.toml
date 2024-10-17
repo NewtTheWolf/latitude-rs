@@ -1,0 +1,11 @@
+[package]
+name = "latitude"
+version = "0.1.0"
+authors = ["Dominik Spitzli <dominik@spitzli.dev>"]
+edition = "2021"
+description = "A crate for integrating with the Latitude API."
+license = "MIT"
+repository = "https://github.com/NewtTheWolf/latitude-rs"
+homepage = "https://github.com/NewtTheWolf/latitude-rs"
+keywords = ["latitude", "api", "cloud", "llm", "prompt"]
+categories = ["api-bindings", "network-programming"]
