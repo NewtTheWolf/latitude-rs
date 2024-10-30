@@ -34,18 +34,20 @@
 //! client.set_version_id("version-uuid".parse().unwrap());
 //! ```
 
-use bytes::Bytes;
-use futures_util::Stream;
-use models::document::{self, RunDocument};
+use async_sse::decode;
+use models::document::{self, ChunkData, Message, RunDocument};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client as ReqwestClient,
 };
 use serde::Serialize;
 use std::error::Error;
-use std::pin::Pin;
+use tokio::io::BufReader;
 use tokio_stream::StreamExt;
-use uuid::Uuid;
+use tokio_util::{
+    compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
+    io::StreamReader,
+};
 
 pub mod models;
 
@@ -57,7 +59,7 @@ pub enum RunResult {
     /// JSON response when `stream` is set to `false`.
     Json(document::RunResponse),
     /// Streaming response when `stream` is set to `true`.    
-    Stream(Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>),
+    Stream(),
 }
 
 /// Client for interacting with the Latitude API.
@@ -229,10 +231,37 @@ impl Client {
         let response = self.client.post(&url).json(&document).send().await?;
 
         if document.stream {
-            let stream = response
-                .bytes_stream()
-                .map(|result| result.map_err(|e| e.into()));
-            Ok(RunResult::Stream(Box::pin(stream)))
+            let stream = response.bytes_stream();
+
+            let reader = StreamReader::new(stream.map(|result| {
+                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            }));
+
+            let buffered_reader = BufReader::new(reader.compat().into_inner());
+
+            let mut decoder = decode(buffered_reader.compat());
+
+            while let Some(event) = decoder.next().await {
+                match event {
+                    Ok(async_sse::Event::Retry(duration)) => {
+                        println!("Retry: {:?}", duration);
+                    }
+                    Ok(async_sse::Event::Message(message)) => {
+                        //println!("Message: {:?}", message);
+
+                        let data = message.into_bytes();
+                        let message: ChunkData = serde_json::from_slice(&data).unwrap();
+
+                        println!("Message: {:?}", message);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+
+            Ok(RunResult::Stream())
         } else {
             let result = response.json::<document::RunResponse>().await?;
             Ok(RunResult::Json(result))
