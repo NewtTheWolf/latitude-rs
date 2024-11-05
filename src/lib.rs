@@ -36,12 +36,21 @@
 
 use async_sse::decode;
 use error::{ApiErrorCodes, Error, LatitudeErrorCodes};
-use models::document::{self, Event, Message, RunDocument, RunResponse};
+use models::{
+    chat::Chat,
+    document::{self, Document, RunDocument, RunResponse},
+    evaluate::{Evaluation, EvaluationResponse},
+    event::{Event, ProviderEventType, TextDelta},
+    log::{Log, LogResponse},
+    options::Options,
+    response::Response,
+};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client as ReqwestClient, StatusCode,
 };
 use serde::Serialize;
+use serde_json::json;
 use tokio::{
     io::BufReader,
     sync::mpsc::{self, Receiver},
@@ -52,21 +61,13 @@ use tokio_util::{
     compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
     io::StreamReader,
 };
+use tracing::{error, info};
 
 pub mod error;
 pub mod models;
 
 static BASE_URL: &str = "https://gateway.latitude.so/api/v2";
 static APP_USER_AGENT: &str = env!("CARGO_PKG_NAME");
-
-/// Enum to represent the response type from the `run` method.
-#[derive(Debug)]
-pub enum RunResult {
-    /// JSON response when `stream` is set to `false`.
-    Json(document::RunResponse),
-    /// Streaming response when `stream` is set to `true`.
-    Stream(Receiver<Event>),
-}
 
 /// The `Client` for interacting with the Latitude API.
 ///
@@ -100,30 +101,6 @@ pub struct Client {
 }
 
 impl Client {
-    /// Creates a new `ClientBuilder` with the required API key.
-    ///
-    /// The `ClientBuilder` enables optional configuration of `project_id`,
-    /// `version_id`, and `base_url`. This approach allows for flexible client
-    /// initialization, where only the API key is required.
-    ///
-    /// # Arguments
-    ///
-    /// * `api_key` - The API key for authenticating requests with the Latitude API.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let client_builder = Client::builder("your_api_key".into());
-    /// ```
-    pub fn builder(api_key: String) -> ClientBuilder {
-        ClientBuilder {
-            api_key,
-            project_id: None,
-            version_id: None,
-            base_url: BASE_URL.into(),
-        }
-    }
-
     /// Creates a new `Client` with the provided API key.
     ///
     /// # Arguments
@@ -161,13 +138,37 @@ impl Client {
         }
     }
 
+    /// Creates a new `ClientBuilder` with the required API key.
+    ///
+    /// The `ClientBuilder` enables optional configuration of `project_id`,
+    /// `version_id`, and `base_url`. This approach allows for flexible client
+    /// initialization, where only the API key is required.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - The API key for authenticating requests with the Latitude API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let client_builder = Client::builder("your_api_key".into());
+    /// ```
+    pub fn builder(api_key: String) -> ClientBuilder {
+        ClientBuilder {
+            api_key,
+            project_id: None,
+            version_id: None,
+            base_url: BASE_URL.into(),
+        }
+    }
+
     /// Runs a document with the specified path and user-defined parameters, with an option for streaming responses.
     ///
     /// # Arguments
     /// * `document` - The `RunDocument` struct containing the path, parameters, and an option to enable streaming.
     ///
     /// # Returns
-    /// * `RunResult` - The response from the Latitude API, either as JSON or a stream of events (`LatitudeEvent` or `ProviderEvent`).
+    /// * `Response` - The response from the Latitude API, either as JSON or a stream of events (`LatitudeEvent` or `ProviderEvent`).
     ///
     /// # Examples
     ///
@@ -196,7 +197,7 @@ impl Client {
     ///     };
     ///
     ///     match client.run(document).await {
-    ///         Ok(RunResult::Json(response)) => println!("JSON Response: {:?}", response),
+    ///         Ok(Response::Json(response)) => println!("JSON Response: {:?}", response),
     ///         Err(e) => eprintln!("Error: {:?}", e),
     ///     }
     /// }
@@ -228,7 +229,7 @@ impl Client {
     ///     };
     ///
     ///     match client.run(document).await {
-    ///         Ok(RunResult::Stream(mut event_stream)) => {
+    ///         Ok(Response::Stream(mut event_stream)) => {
     ///             while let Some(event) = event_stream.recv().await {
     ///                 match event {
     ///                     Event::LatitudeEvent(data) => println!("Latitude Event: {:?}", data),
@@ -240,7 +241,7 @@ impl Client {
     ///     }
     /// }
     /// ```
-    pub async fn run<T>(&self, document: RunDocument<T>) -> Result<RunResult, Error>
+    pub async fn run<T>(&self, document: RunDocument<T>) -> Result<Response, Error>
     where
         T: Serialize + std::fmt::Debug,
     {
@@ -262,8 +263,6 @@ impl Client {
             "{}/projects/{}/versions/{}/documents/run",
             self.base_url, project_id, version_id
         );
-
-        println!("Base URL: {}", url);
 
         let response = self.client.post(&url).json(&document).send().await?;
 
@@ -309,13 +308,150 @@ impl Client {
                 }
             });
 
-            return Ok(RunResult::Stream(receiver));
+            return Ok(Response::Stream(receiver));
         }
 
         response
             .json::<RunResponse>()
             .await
-            .map(RunResult::Json)
+            .map(Response::Json)
+            .map_err(Error::from)
+    }
+
+    pub async fn chat(&self, chat: Chat) -> Result<Response, Error> {
+        if !chat.stream {
+            unimplemented!()
+        }
+
+        let url = format!(
+            "{}/conversations/{}/chat",
+            self.base_url, chat.conversation_id
+        );
+
+        let response = self.client.post(&url).json(&chat).send().await?;
+
+        Self::check_status(response.status())?;
+
+        let stream = response.bytes_stream();
+        let (sender, receiver) = mpsc::channel(100);
+
+        tokio::spawn(async move {
+            let reader = StreamReader::new(stream.map(|result| {
+                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            }));
+            let buffered_reader = BufReader::new(reader.compat().into_inner());
+            let mut decoder = decode(buffered_reader.compat());
+
+            while let Some(event) = decoder.next().await {
+                match event {
+                    Ok(async_sse::Event::Message(message)) => {
+                        let data = message.data();
+                        let parsed_event = match message.name().as_str() {
+                            "latitude-event" => serde_json::from_slice(&data)
+                                .map(Event::LatitudeEvent)
+                                .map_err(Error::from),
+                            "provider-event" => serde_json::from_slice(&data)
+                                .map(Event::ProviderEvent)
+                                .map_err(Error::from),
+                            _ => Ok(Event::UnknownEvent),
+                        };
+
+                        if let Ok(event) = parsed_event {
+                            if sender.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(async_sse::Event::Retry(_)) => {}
+                    Err(e) => {
+                        error!("Streaming error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        return Ok(Response::Stream(receiver));
+
+        /*         response
+        .json::<RunResponse>()
+        .await
+        .map(Response::Json)
+        .map_err(Error::from) */
+    }
+
+    pub async fn get(&self, path: &str, options: Option<Options>) -> Result<Document, Error> {
+        let project_id = options
+            .as_ref()
+            .and_then(|opts| opts.project_id)
+            .or(self.project_id)
+            .ok_or_else(|| Error::ConfigError("Project ID is required".to_owned()))?;
+
+        let version_id = options
+            .as_ref()
+            .and_then(|opts| opts.version_id.clone())
+            .or(self.version_id.clone())
+            .unwrap_or_else(|| "live".to_string());
+
+        let url = format!(
+            "{}/projects/{}/versions/{}/documents/{}",
+            self.base_url, project_id, version_id, path
+        );
+
+        let response = self.client.get(&url).send().await?;
+
+        Self::check_status(response.status())?;
+
+        response.json::<Document>().await.map_err(Error::from)
+    }
+
+    pub async fn log(&self, log: Log) -> Result<LogResponse, Error> {
+        let project_id = log
+            .options
+            .as_ref()
+            .and_then(|opts| opts.project_id)
+            .or(self.project_id)
+            .ok_or_else(|| Error::ConfigError("Project ID is required".to_owned()))?;
+
+        let version_id = log
+            .options
+            .as_ref()
+            .and_then(|opts| opts.version_id.clone())
+            .or(self.version_id.clone())
+            .unwrap_or_else(|| "live".to_string());
+
+        let url = format!(
+            "{}/projects/{}/versions/{}/documents/logs",
+            self.base_url, project_id, version_id
+        );
+
+        let response = self.client.post(&url).json(&log).send().await?;
+
+        Self::check_status(response.status())?;
+
+        response.json::<LogResponse>().await.map_err(Error::from)
+    }
+
+    pub async fn eval(
+        &self,
+        conversation: &str,
+        eval: Option<Evaluation>,
+    ) -> Result<EvaluationResponse, Error> {
+        let url = format!("{}/conversations/{}/chat", self.base_url, conversation);
+
+        let mut response = self.client.post(&url);
+
+        if let Some(eval) = eval {
+            response = response.json(&eval);
+        }
+
+        let response = response.send().await?;
+
+        Self::check_status(response.status())?;
+
+        response
+            .json::<EvaluationResponse>()
+            .await
             .map_err(Error::from)
     }
 
@@ -442,11 +578,15 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use document::{ChainStep, Config, LatitudeEventType, Options, Role};
-    use document::{ProviderEventType, TextDelta};
     use httpmock::Method::POST;
     use httpmock::Mock;
     use httpmock::MockServer;
+    use models::event::LatitudeEvent;
+    use models::event::Message;
+    use models::event::{ChainStep, Config, LatitudeEventType, ProviderEventType, TextDelta};
+    use models::message::Message as MessageMessage;
+    use models::message::Role;
+    use models::options::Options;
     use serde_json::json;
     use uuid::Uuid;
 
@@ -471,9 +611,9 @@ mod tests {
         client_builder.build()
     }
 
-    fn check_standard_result(result: Result<RunResult, Error>) {
+    fn check_standard_result(result: Result<Response, Error>) {
         match result {
-            Ok(RunResult::Json(response)) => {
+            Ok(Response::Json(response)) => {
                 assert_eq!(response.uuid, "123e4567-e89b-12d3-a456-426614174000");
                 assert_eq!(response.response.text, "Test response");
                 assert_eq!(response.response.usage.prompt_tokens, Some(10));
@@ -682,7 +822,7 @@ mod tests {
 
         let document = RunDocument::<()>::builder()
             .path("test-path".to_string())
-            .stream(true)
+            .stream()
             .build()
             .expect("Failed to build RunDocument");
 
@@ -691,7 +831,7 @@ mod tests {
             .await
             .expect("Expected a stream response");
 
-        if let RunResult::Stream(mut stream) = result {
+        if let Response::Stream(mut stream) = result {
             if let Some(event) = stream.recv().await {
                 match event {
                     Event::LatitudeEvent(data) => {
@@ -729,6 +869,7 @@ mod tests {
     async fn test_provider_event_stream() {
         // Tests `provider-event` streaming response
         let server = MockServer::start_async().await;
+
         let mock = setup_mock_with_stream_event(
             &server,
             "provider-event",
@@ -744,7 +885,7 @@ mod tests {
 
         let document = RunDocument::<()>::builder()
             .path("test-path".to_string())
-            .stream(true)
+            .stream()
             .build()
             .expect("Failed to build RunDocument");
 
@@ -753,7 +894,7 @@ mod tests {
             .await
             .expect("Expected a stream response");
 
-        if let RunResult::Stream(mut stream) = result {
+        if let Response::Stream(mut stream) = result {
             if let Some(event) = stream.recv().await {
                 match event {
                     Event::ProviderEvent(data) => {
@@ -795,7 +936,7 @@ mod tests {
 
         let document = RunDocument::<()>::builder()
             .path("test-path".to_string())
-            .stream(true)
+            .stream()
             .build()
             .expect("Failed to build RunDocument");
 
@@ -804,7 +945,7 @@ mod tests {
             .await
             .expect("Expected a stream response");
 
-        if let RunResult::Stream(mut stream) = result {
+        if let Response::Stream(mut stream) = result {
             if let Some(event) = stream.recv().await {
                 match event {
                     Event::UnknownEvent => {
@@ -844,13 +985,13 @@ mod tests {
 
         let document = RunDocument::<()>::builder()
             .path("test-path".to_string())
-            .stream(true)
+            .stream()
             .build()
             .expect("Failed to build RunDocument");
 
         let result = client.run(document).await;
 
-        if let Ok(RunResult::Stream(mut stream)) = result {
+        if let Ok(Response::Stream(mut stream)) = result {
             if let Some(event) = stream.recv().await {
                 match event {
                     Event::UnknownEvent => {
@@ -933,5 +1074,161 @@ mod tests {
         // Test another success status (e.g., CREATED)
         let result = Client::check_status(StatusCode::CREATED);
         assert!(matches!(result, Ok(())));
+    }
+
+    #[tokio::test]
+    async fn test_get_document_success() {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method("GET")
+                .path("/projects/12345/versions/live/documents/test-path")
+                .header("authorization", "Bearer test_api_key");
+            then.status(200).json_body(json!({
+                "id": 1,
+                "document_uuid": "123e4567-e89b-12d3-a456-426614174000",
+                "path": "test-path",
+                "content": "Test content",
+                "resolved_content": "Resolved content",
+                "content_hash": "hash123",
+                "commit_id": 100,
+                "deleted_at": null,
+                "created_at": "2024-11-01T00:00:00Z",
+                "updated_at": "2024-11-02T00:00:00Z",
+                "merged_at": null,
+                "project_id": 12345,
+                "config": {
+                    "provider": "Latitude",
+                    "model": "gpt-4o-mini"
+                }
+            }));
+        });
+
+        let client = setup_client(
+            "test_api_key",
+            Some(12345),
+            Some("live"),
+            Some(&server.base_url()),
+        );
+
+        let result = client.get("test-path", None).await;
+
+        if result.is_ok() {
+            let document = result.unwrap();
+            assert_eq!(document.path, "test-path");
+            assert_eq!(document.content, "Test content");
+        } else {
+            eprintln!("Test failed with error: {:?}", result);
+        }
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_get_document_missing_project_id() {
+        let client = setup_client(
+            "test_api_key",
+            None,
+            Some("live"),
+            Some("https://test.url/api"),
+        );
+        let result = client.get("test-path", None).await;
+
+        assert!(matches!(result, Err(Error::ConfigError(msg)) if msg == "Project ID is required"));
+    }
+
+    #[tokio::test]
+    async fn test_log_success() {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method("POST")
+                .path("/projects/12345/versions/live/documents/logs")
+                .header("authorization", "Bearer test_api_key")
+                .header("content-type", "application/json");
+            then.status(200).json_body(json!({
+                "id": 1,
+                "uuid": "123e4567-e89b-12d3-a456-426614174000",
+                "document_uuid": "456e1234-d89b-12d3-a456-426614174000",
+                "commit_id": 101,
+                "resolved_content": "Test content",
+                "content_hash": "hash123",
+                "parameters": {},
+                "custom_identifier": null,
+                "duration": null,
+                "source": "test",
+                "created_at": "2024-11-01T00:00:00Z",
+                "updated_at": "2024-11-02T00:00:00Z"
+            }));
+        });
+
+        let client = setup_client(
+            "test_api_key",
+            Some(12345),
+            Some("live"),
+            Some(&server.base_url()),
+        );
+
+        let log = Log::builder()
+            .path("test-path")
+            .add_message(
+                MessageMessage::builder()
+                    .role(Role::User)
+                    .add_content("text", "another joke")
+                    .build()
+                    .unwrap(),
+            )
+            .response("Test response")
+            .options(Options::new(Some("live".to_string()), Some(12345)))
+            .build()
+            .expect("Failed to build log");
+
+        let result = client.log(log).await;
+
+        /*         if result.is_ok() {
+            let document = result.unwrap();
+            assert_eq!(document.path, "test-path");
+            assert_eq!(document.content, "Test content");
+        } else {
+            eprintln!("Test failed with error: {:?}", result);
+        } */
+
+        if result.is_ok() {
+            let log_response = result.unwrap();
+            assert_eq!(log_response.id, 1);
+            assert_eq!(log_response.source, "test");
+        } else {
+            eprintln!("Test failed with error: {:?}", result);
+        }
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_eval_success() {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method("POST")
+                .path("/conversations/test-convo/chat")
+                .header("authorization", "Bearer test_api_key")
+                .header("content-type", "application/json");
+            then.status(200).json_body(json!({
+                "evaluations": ["positive", "relevant"]
+            }));
+        });
+
+        let client = setup_client(
+            "test_api_key",
+            Some(12345),
+            Some("live"),
+            Some(&server.base_url()),
+        );
+
+        let evaluation = Evaluation {
+            evaluation_uuids: vec![Some("eval-123".to_string())],
+        };
+
+        let result = client.eval("test-convo", Some(evaluation)).await;
+        assert!(result.is_ok());
+        let eval_response = result.unwrap();
+        assert_eq!(eval_response.evaluations, vec!["positive", "relevant"]);
+        mock.assert();
     }
 }
