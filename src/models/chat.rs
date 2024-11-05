@@ -124,6 +124,12 @@ impl ChatBuilder {
     }
 }
 
+impl Default for ChatBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::models::message::{Content, Role};

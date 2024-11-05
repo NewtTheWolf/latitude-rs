@@ -100,6 +100,12 @@ impl MessageBuilder {
     }
 }
 
+impl Default for MessageBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Content {

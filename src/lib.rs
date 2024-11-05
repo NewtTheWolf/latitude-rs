@@ -19,7 +19,7 @@
 //! Add this crate to your `Cargo.toml` file:
 //!
 //! ```sh
-//! cargo add latitude
+//! cargo add latitude-sdk
 //! ```
 //!
 //! ## Usage
@@ -27,11 +27,13 @@
 //! To use the Latitude API client, create an instance of `Client` with your API key, set the project ID, and run a document.
 //!
 //! ```rust
-//! use latitude::Client;
+//! use latitude_sdk::Client;
 //!
-//! let client = Client::new("your_api_key".into());
-//! client.set_project_id(123);
-//! client.set_version_id("version-uuid".parse().unwrap());
+//! let client = Client::builder("your_api_key".into())
+//!     .project_id(123)
+//!     .version_id("version-uuid".to_string())
+//!     .base_url("https://custom.url/api".to_string())
+//!     .build();
 //! ```
 
 use async_sse::decode;
@@ -70,7 +72,7 @@ static APP_USER_AGENT: &str = env!("CARGO_PKG_NAME");
 /// ## Usage Example
 ///
 /// ```
-/// use latitude::Client;
+/// use latitude_sdk::Client;
 ///
 /// let client = Client::builder("your_api_key".into())
 ///     .project_id(123)
@@ -97,10 +99,15 @@ impl Client {
     ///
     /// # Arguments
     /// * `api_key` - The API key for authenticating with the Latitude API.
+    /// * `project_id` - The default project ID used in requests.
+    /// * `version_id` - The default version UUID used in requests.
+    /// * `base_url` - The base URL for API requests. Defaults to the Latitude API endpoint.
     ///
     /// # Examples
     /// ```
-    /// let client = Client::new("your_api_key".into());
+    /// use latitude_sdk::Client;
+    ///
+    /// let client = Client::new("your_api_key".into(), None, None, None);
     /// ```
     pub fn new(
         api_key: String,
@@ -143,6 +150,8 @@ impl Client {
     /// # Example
     ///
     /// ```
+    /// use latitude_sdk::Client;
+    ///
     /// let client_builder = Client::builder("your_api_key".into());
     /// ```
     pub fn builder(api_key: String) -> ClientBuilder {
@@ -166,30 +175,37 @@ impl Client {
     ///
     /// Running a document with a JSON response:
     /// ```rust
-    /// use latitude::{Client, models::document::RunDocument};
+    /// use latitude_sdk::{Client, models::document::RunDocument};
+    /// use latitude_sdk::models::response::Response;
     /// use serde::Serialize;
     ///
-    /// #[derive(Serialize)]
+    /// #[derive(Serialize, Debug, Default)]
     /// struct Params {
     ///     user_message: String,
     /// }
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let client = Client::new("your_api_key".into());
-    ///     client.set_project_id(12345);
+    /// let client = Client::builder("your_api_key".into())
+    ///     .project_id(123)
+    ///     .version_id("version-uuid".to_string())
+    ///     .base_url("https://custom.url/api".to_string())
+    ///     .build();
+    ///
     ///     let params = Params {
     ///         user_message: "Hello, world!".to_owned(),
     ///     };
     ///
     ///     let document = RunDocument {
     ///         path: "Workers/EmotionAnalyzer".to_owned(),
-    ///         parameters: params,
+    ///         parameters: Some(params),
     ///         stream: false,
+    ///         options: None
     ///     };
     ///
     ///     match client.run(document).await {
     ///         Ok(Response::Json(response)) => println!("JSON Response: {:?}", response),
+    ///         _ => println!("Received a streaming response"),
     ///         Err(e) => eprintln!("Error: {:?}", e),
     ///     }
     /// }
@@ -197,27 +213,34 @@ impl Client {
     ///
     /// Running a document with a streaming response:
     /// ```rust
-    /// use latitude::{Client, models::document::RunDocument};
+    /// use latitude_sdk::{Client, models::document::RunDocument};
+    /// use latitude_sdk::models::event::Event;
     /// use serde::Serialize;
     /// use tokio_stream::StreamExt;
+    /// use latitude_sdk::models::response::Response;
     ///
-    /// #[derive(Serialize)]
+    /// #[derive(Serialize, Debug, Default)]
     /// struct Params {
     ///     user_message: String,
     /// }
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let client = Client::new("your_api_key".into());
-    ///     client.set_project_id(12345);
+    /// let client = Client::builder("your_api_key".into())
+    ///     .project_id(123)
+    ///     .version_id("version-uuid".to_string())
+    ///     .base_url("https://custom.url/api".to_string())
+    ///     .build();
+    ///
     ///     let params = Params {
     ///         user_message: "Hello, world!".to_owned(),
     ///     };
     ///
     ///     let document = RunDocument {
     ///         path: "Workers/EmotionAnalyzer".to_owned(),
-    ///         parameters: params,
+    ///         parameters: Some(params),
     ///         stream: true,
+    ///         options: None
     ///     };
     ///
     ///     match client.run(document).await {
@@ -226,9 +249,11 @@ impl Client {
     ///                 match event {
     ///                     Event::LatitudeEvent(data) => println!("Latitude Event: {:?}", data),
     ///                     Event::ProviderEvent(data) => println!("Provider Event: {:?}", data),
+    ///                     Event::UnknownEvent => println!("Unknown Event"),
     ///                 }
     ///             }
     ///         },
+    ///        _ => println!("Received a JSON response"),
     ///         Err(e) => eprintln!("Error: {:?}", e),
     ///     }
     /// }
@@ -276,10 +301,10 @@ impl Client {
                         Ok(async_sse::Event::Message(message)) => {
                             let data = message.data();
                             let parsed_event = match message.name().as_str() {
-                                "latitude-event" => serde_json::from_slice(&data)
+                                "latitude-event" => serde_json::from_slice(data)
                                     .map(Event::LatitudeEvent)
                                     .map_err(Error::from),
-                                "provider-event" => serde_json::from_slice(&data)
+                                "provider-event" => serde_json::from_slice(data)
                                     .map(Event::ProviderEvent)
                                     .map_err(Error::from),
                                 _ => Ok(Event::UnknownEvent),
@@ -339,10 +364,10 @@ impl Client {
                     Ok(async_sse::Event::Message(message)) => {
                         let data = message.data();
                         let parsed_event = match message.name().as_str() {
-                            "latitude-event" => serde_json::from_slice(&data)
+                            "latitude-event" => serde_json::from_slice(data)
                                 .map(Event::LatitudeEvent)
                                 .map_err(Error::from),
-                            "provider-event" => serde_json::from_slice(&data)
+                            "provider-event" => serde_json::from_slice(data)
                                 .map(Event::ProviderEvent)
                                 .map_err(Error::from),
                             _ => Ok(Event::UnknownEvent),
@@ -363,7 +388,7 @@ impl Client {
             }
         });
 
-        return Ok(Response::Stream(receiver));
+        Ok(Response::Stream(receiver))
 
         /*         response
         .json::<RunResponse>()
@@ -493,6 +518,8 @@ impl ClientBuilder {
     /// # Example
     ///
     /// ```
+    /// use latitude_sdk::Client;
+    ///
     /// let client_builder = Client::builder("your_api_key".into())
     ///     .project_id(123);
     /// ```
@@ -513,6 +540,8 @@ impl ClientBuilder {
     /// # Example
     ///
     /// ```
+    /// use latitude_sdk::Client;
+    ///
     /// let client_builder = Client::builder("your_api_key".into())
     ///     .version_id("version-uuid".to_string());
     /// ```
@@ -533,6 +562,8 @@ impl ClientBuilder {
     /// # Example
     ///
     /// ```
+    /// use latitude_sdk::Client;
+    ///
     /// let client_builder = Client::builder("your_api_key".into())
     ///     .base_url("https://custom.url/api".to_string());
     /// ```
@@ -549,6 +580,8 @@ impl ClientBuilder {
     /// # Example
     ///
     /// ```
+    /// use latitude_sdk::Client;
+    ///
     /// let client = Client::builder("your_api_key".into())
     ///     .project_id(123)
     ///     .version_id("version-uuid".to_string())

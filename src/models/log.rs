@@ -149,6 +149,12 @@ impl LogBuilder {
     }
 }
 
+impl Default for LogBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogResponse {

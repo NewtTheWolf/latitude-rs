@@ -26,18 +26,10 @@ impl Options {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct OptionsBuilder {
     pub version_id: Option<String>,
     pub project_id: Option<u64>,
-}
-
-impl Default for OptionsBuilder {
-    fn default() -> Self {
-        Self {
-            version_id: None,
-            project_id: None,
-        }
-    }
 }
 
 impl OptionsBuilder {
