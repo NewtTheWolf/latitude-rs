@@ -1,5 +1,4 @@
 use crate::models::event::Event;
-use serde::Deserialize;
 use tokio::sync::mpsc::Receiver;
 
 use super::document::RunResponse;

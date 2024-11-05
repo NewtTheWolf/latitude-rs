@@ -35,12 +35,12 @@
 //! ```
 
 use async_sse::decode;
-use error::{ApiErrorCodes, Error, LatitudeErrorCodes};
+use error::{Error, LatitudeErrorCodes};
 use models::{
     chat::Chat,
-    document::{self, Document, RunDocument, RunResponse},
+    document::{Document, RunDocument, RunResponse},
     evaluate::{Evaluation, EvaluationResponse},
-    event::{Event, ProviderEventType, TextDelta},
+    event::Event,
     log::{Log, LogResponse},
     options::Options,
     response::Response,
@@ -50,18 +50,10 @@ use reqwest::{
     Client as ReqwestClient, StatusCode,
 };
 use serde::Serialize;
-use serde_json::json;
-use tokio::{
-    io::BufReader,
-    sync::mpsc::{self, Receiver},
-};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::{io::BufReader, sync::mpsc};
 use tokio_stream::StreamExt;
-use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
-    io::StreamReader,
-};
-use tracing::{error, info};
+use tokio_util::{compat::TokioAsyncReadCompatExt, io::StreamReader};
+use tracing::error;
 
 pub mod error;
 pub mod models;
@@ -89,7 +81,7 @@ static APP_USER_AGENT: &str = env!("CARGO_PKG_NAME");
 #[derive(Clone)]
 pub struct Client {
     /// The API key for authentication.
-    api_key: String,
+    pub api_key: String,
     /// The default project ID used in requests.
     project_id: Option<u64>,
     /// The default version UUID used in requests.
@@ -581,7 +573,6 @@ mod tests {
     use httpmock::Method::POST;
     use httpmock::Mock;
     use httpmock::MockServer;
-    use models::event::LatitudeEvent;
     use models::event::Message;
     use models::event::{ChainStep, Config, LatitudeEventType, ProviderEventType, TextDelta};
     use models::message::Message as MessageMessage;
