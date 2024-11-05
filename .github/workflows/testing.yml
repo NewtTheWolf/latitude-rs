@@ -1,0 +1,18 @@
+name: Test Package
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+jobs:
+  lint_and_test:
+    name: Linting and Testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+      - run: cargo clippy --all-features --no-deps
+      - run: cargo test --all-features
