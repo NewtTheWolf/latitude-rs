@@ -1,23 +1,63 @@
-# latitude
+# Latitude API Client
 
-Welcome to the `latitude` crate! This crate is currently under development and is being reserved for an upcoming project focused on integrating with the Latitude API. Stay tuned for more updates!
+This crate provides a client for interacting with the Latitude API, allowing users to execute documents (prompts) and handle real-time AI-powered conversations through a simple HTTP-based interface.
 
-## Overview
+## Features
 
-The `latitude` crate will offer innovative and robust solutions for interacting with the Latitude API. Our goal is to provide a high-quality library that is easy to use and integrate into your projects.
+- **Document Execution**: Run specific documents (prompts) with custom parameters.
+- **Stream Responses**: Optionally receive responses as a real-time data stream.
+- **Simple API Integration**: API key authentication and project/version management.
 
-## Getting Started
+## Installation
 
-Since this project is still in its early stages, there are no installation instructions or usage examples yet. Once development progresses, we will provide detailed documentation and examples on how to get started with `latitude`.
+Add this crate to your `Cargo.toml` file:
 
-## Contribution
+```
+cargo add latitude-sdk
+```
 
-We welcome contributions from the community! If you are interested in contributing to this project, please get in touch with us. For major changes, please open an issue first to discuss what you would like to change.
+## Usage
+
+To use the Latitude API client, create an instance of `Client` with your API key, set the project ID, and run a document.
+
+```rust
+use latitude_sdk::Client;
+
+let client = Client::builder("your_api_key".into())
+    .project_id(123)
+    .version_id("version-uuid".to_string())
+    .base_url("https://custom.url/api".to_string())
+    .build();
+```
+
+## Example
+
+Here is a simple example of how to use the client to run a document:
+
+```rust
+use latitude_sdk::{Client, Document};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder("your_api_key".into())
+        .project_id(123)
+        .version_id("version-uuid".to_string())
+        .base_url("https://custom.url/api".to_string())
+        .build();
+
+    let document = Document::new("document_id".to_string());
+    let response = client.run_document(document).await?;
+
+    println!("Response: {:?}", response);
+
+    Ok(())
+}
+```
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Contact
-
-For any inquiries or questions, feel free to reach out to me at dominik@spitzli.dev.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
